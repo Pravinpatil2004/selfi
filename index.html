@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Selfie & Location — Consent Required</title>
+  <style>
+    :root{font-family:system-ui,Segoe UI,Roboto,Arial}
+    body{max-width:720px;margin:18px auto;padding:18px}
+    h1{font-size:20px}
+    video, canvas{width:100%;border-radius:10px;background:#000}
+    .controls{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+    button{padding:10px 12px;border-radius:8px;border:0;background:#0b69ff;color:white;cursor:pointer}
+    button.ghost{background:#eef2ff;color:#0b69ff}
+    label.consent{display:flex;gap:10px;align-items:center;margin-top:12px}
+    .note{font-size:13px;color:#374151;margin-top:8px}
+    .status{margin-top:10px;font-size:14px;color:#111}
+    .small{font-size:12px;color:#6b7280}
+  </style>
+</head>
+<body>
+  <h1>Share Selfie & Location</h1>
+  <p class="note">This page requests camera & location access. Nothing will be sent anywhere unless the user explicitly checks consent and clicks <strong>Allow & Send</strong>.</p>
+
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas" style="display:none"></canvas>
+
+  <div class="controls">
+    <button id="startBtn">Start (Allow Camera & Location)</button>
+    <button id="captureBtn" class="ghost">Capture Selfie</button>
+    <button id="allowSendBtn" class="ghost">Allow & Send</button>
+    <button id="downloadBtn" class="ghost">Download JSON</button>
+  </div>
+
+  <label class="consent">
+    <input type="checkbox" id="consentCheckbox" />
+    <span>I consent to send my selfie & location to the recipient.</span>
+  </label>
+
+  <p id="info" class="small"></p>
+  <p id="status" class="status"></p>
+
+<script>
+/* CONFIG: set this to your HTTPS endpoint that accepts JSON POST.
+   Example: "https://yourserver.com/upload-selfie"
+   If left empty, the page allows local download instead of sending. */
+const uploadUrl = ""; // << PUT YOUR SERVER URL HERE
+
+const startBtn = document.getElementById('startBtn');
+const captureBtn = document.getElementById('captureBtn');
+const allowSendBtn = document.getElementById('allowSendBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const consentCheckbox = document.getElementById('consentCheckbox');
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const info = document.getElementById('info');
+const statusEl = document.getElementById('status');
+
+let stream = null;
+let lastImageDataUrl = null;
+let lastLocation = null;
+
+function setStatus(msg, isError=false){
+  statusEl.textContent = msg;
+  statusEl.style.color = isError ? '#b91c1c' : '#111827';
+}
+
+/* 1) Start camera & request geolocation */
+startBtn.addEventListener('click', async () => {
+  setStatus('Requesting camera permission...');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user" },
+      audio: false
+    });
+    video.srcObject = stream;
+    setStatus('Camera started. Requesting location...');
+  } catch (err) {
+    setStatus('Camera permission denied or error: ' + err.message, true);
+    return;
+  }
+
+  if ('geolocation' in navigator) {
+    navigator.geolocation.getCurrentPosition((pos) => {
+      lastLocation = {
+        lat: pos.coords.latitude,
+        lon: pos.coords.longitude,
+        accuracy: pos.coords.accuracy
+      };
+      info.textContent =
+        `Location: ${lastLocation.lat.toFixed(6)}, ${lastLocation.lon.toFixed(6)} (±${Math.round(lastLocation.accuracy)} m)`;
+      setStatus('Ready. Capture selfie → Check consent → Allow & Send.');
+    }, (err) => {
+      lastLocation = null;
+      info.textContent = 'Location not available / permission denied.';
+      setStatus('Ready. Capture selfie → Check consent → Allow & Send.');
+    }, { enableHighAccuracy: true, timeout: 10000 });
+  }
+});
+
+/* 2) Capture selfie */
+captureBtn.addEventListener('click', () => {
+  if (!stream) { setStatus('Please Start camera first.', true); return; }
+
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  lastImageDataUrl = canvas.toDataURL('image/png');
+
+  setStatus('Selfie captured. Check consent then Allow & Send.');
+});
+
+/* 3) Send data (requires consent checkbox) */
+allowSendBtn.addEventListener('click', async () => {
+  if (!lastImageDataUrl) { setStatus('Please capture a selfie first.', true); return; }
+  if (!consentCheckbox.checked) { setStatus('You must check the consent box.', true); return; }
+  if (!uploadUrl) {
+    setStatus('uploadUrl not set. Use Download JSON or set your server URL.', true);
+    return;
+  }
+
+  const payload = {
+    filename: `selfie_${Date.now()}.png`,
+    imageBase64: lastImageDataUrl.split(',')[1],
+    timestamp: new Date().toISOString(),
+    location: lastLocation
+  };
+
+  setStatus('Sending data...');
+  try {
+    const resp = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) throw new Error(`Server error: ${resp.status}`);
+    setStatus('Sent successfully!');
+  } catch (err) {
+    setStatus('Send failed: ' + err.message, true);
+  }
+});
+
+/* 4) Download JSON (offline fallback) */
+downloadBtn.addEventListener('click', () => {
+  if (!lastImageDataUrl) { setStatus('Capture first.', true); return; }
+
+  const payload = {
+    filename: `selfie_${Date.now()}.png`,
+    imageBase64: lastImageDataUrl.split(',')[1],
+    timestamp: new Date().toISOString(),
+    location: lastLocation
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `selfie_location_${Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+
+  setStatus('Downloaded JSON.');
+});
+
+/* Stop camera on exit */
+window.addEventListener('beforeunload', () => {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+});
+</script>
+</body>
+</html>
